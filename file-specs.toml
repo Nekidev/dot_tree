@@ -1,0 +1,7 @@
+[Headers]
+file-identificator = "4e 45 4b 4f 54 52 45 45"  # NEKOTREE
+file-extension = "vpt"
+hash-size = "8 bytes"
+
+[Tree]
+method = "tranversal"
