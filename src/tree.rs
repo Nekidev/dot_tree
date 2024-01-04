@@ -1,6 +1,7 @@
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Read;
 
+// NEKOTREE
 const FILE_IDENTIFIER: [u8; 8] = [0x4e, 0x45, 0x4b, 0x4f, 0x54, 0x52, 0x45, 0x45];
 
 #[derive(Debug)]
@@ -18,7 +19,7 @@ pub struct Tree {
 
 impl Tree {
     pub fn open(file_path: &str) -> Result<Self, TreeFileError> {
-        let mut file = match File::open(&file_path) {
+        let mut file = match OpenOptions::new().read(true).create(false).open(&file_path) {
             Ok(file) => file,
             Err(_) => return Err(TreeFileError::FileNotOpened),
         };

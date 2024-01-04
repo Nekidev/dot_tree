@@ -5,3 +5,4 @@ hash-size = "8 bytes"
 
 [Tree]
 method = "tranversal"
+order = "inner, outer"
