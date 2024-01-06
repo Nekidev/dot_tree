@@ -1,0 +1,2 @@
+class InvalidFileIdentifier(Exception):
+    pass

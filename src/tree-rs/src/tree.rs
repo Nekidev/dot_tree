@@ -34,8 +34,6 @@ impl Tree {
             return Err(TreeFileError::InvalidIdentifier);
         };
 
-        let hash_size = u64::from_be_bytes((&file_headers[8..16]).try_into().unwrap());
-
         Ok(Self {
             file,
             hash_size,
