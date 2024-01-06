@@ -146,5 +146,24 @@ Sub-items are placed one after the other, in order of definition in the file hea
 The following "graph" illustrates how a complete `.tree` file looks:
 
 ```
-{Headers: [8 bytes: File identifier] [2 bytes: Format version] [2 bytes: Features] [4 bytes: Amount of items] ([4 bytes: Item x size] for x in amount_of_items)} {Tree: ([n bits: Item header] for n in item_header_sizes) ([n bits: Sub-item content] for n in subitem_sizes)}
+{ Headers:
+    [8 bytes: File identifier]
+    [2 bytes: Format version]
+    [2 bytes: Features]
+    [4 bytes: Amount of items]
+    (
+        [4 bytes: Item x size] 
+        for x in amount_of_items
+    )
+}
+{ Tree:
+    (
+        [n bits: Item header]
+        for n in item_header_sizes
+    )
+    (
+        [n bits: Sub-item content]
+        for n in subitem_sizes
+    )
+}
 ```
