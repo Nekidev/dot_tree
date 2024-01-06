@@ -55,7 +55,11 @@ The next two bytes represent the features enabled in the tree. A `1` means that 
 This header specifies the number and size of the sub-items in the tree. The order of the sub-items is kept.
 
 ```
-[4 bytes: Amount of sub-items] [4 bytes: Sub-item 1 size] [4 bytes: Sub-item 2 size] ...
+[4 bytes: Amount of sub-items]
+(
+    [4 bytes: Sub-item size]
+    for subitem in 0..amount_of_subitems
+)
 ```
 
 #### Amount of Sub-items
@@ -101,14 +105,21 @@ Each item in the tree consists of one or more sub-items (defined in the headers)
 
 These features can be enabled and disabled in the headers. Check the features headers above for more information.
 
-Each item has its own headers specified by the features above. The order of the headers on top is kept. E.g., if **disabling** and **flattening** features are enabled, the first header bit MUST be for disabling and the second for flattening. Header bits must be present even if they aren't needed for the specific item.
+Each item has its own headers specified by the features above. The order of the headers on top is kept.  Header bits must be present even if they aren't needed for the specific item.
 
 Headers must be present even if they don't mean anything for that specific item. E.g. root items cannot be flattened, but they'll still have a bit assigned to flattening, which will be ignored.
 
-The following structure represents how items must be structured:
+The following graph represents how items must be structured:
 
 ```
-[1 Bit: Feature 1] [3 Bit: Feature 2] [X Bits: Item content]
+(
+    [n bit: Header]
+    for n in item_header_sizes
+)
+(
+    [n bits: Sub-item 1 content]
+    for n in subitem_sizes
+)
 ```
 
 You must not add bits corresponding to features that aren't enabled. The amount of bits assigned to each feature can be checked [in the features header](#features).
@@ -135,11 +146,7 @@ All items must have an extra 1-bit prefix when this feature is enabled. This bit
 
 Each item's sub-item is a piece of data stored in that specific item. They don't have individual headers and are placed one after the other.
 
-Sub-items are placed one after the other, in order of definition in the file headers. For example:
-
-```
-[1 bit: Header] [60 bits: Sub-item 1 content] [32 bits: Sub-item 2 content] ...
-```
+Sub-items are placed one after the other, in order of definition in the file headers.
 
 ## File Structure Graph
 
