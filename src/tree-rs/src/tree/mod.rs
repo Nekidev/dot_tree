@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
@@ -16,6 +16,15 @@ pub enum TreeFileError {
     MissingHeaders,
     InvalidIdentifier,
     UnsupportedFormatVersion,
+    MissingPermissions,
+}
+
+#[derive(Debug)]
+pub enum NodeError {
+    Disabled,
+    Unexistent,
+    InvalidSubitem,
+    NodeAlreadyExists,
 }
 
 #[derive(PartialEq, Debug, EnumIter)]
@@ -23,61 +32,91 @@ pub enum Feature {
     Disabling,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum TreeOpenMode {
+    Read,
+    ReadWrite,
+}
+
 #[derive(Debug)]
 pub struct Tree {
-    file: File,
-    features: Vec<Feature>,
-    subitems: Vec<u32>,
+    pub file: File,
+    pub mode: TreeOpenMode,
+    pub header_size: usize,
+    pub features: Vec<Feature>,
+    pub subitems: Vec<u32>,
+}
+
+#[derive(Debug)]
+pub struct Node<'a> {
+    tree: &'a mut Tree,
+    pub position: u128,
+    pub subitems: Vec<Vec<bool>>,
 }
 
 impl Tree {
-    pub fn open(file_path: &'static str) -> Result<Self, TreeFileError> {
+    pub fn open(file_path: &'static str, mode: TreeOpenMode) -> Result<Self, TreeFileError> {
         let mut features: Vec<Feature> = vec![];
         let mut subitems: Vec<u32> = vec![];
 
-        let mut file = match OpenOptions::new().read(true).create(false).open(&file_path) {
+        {
+            let mut file = match OpenOptions::new().read(true).create(false).open(&file_path) {
+                Ok(file) => file,
+                Err(_) => return Err(TreeFileError::FileNotOpened),
+            };
+
+            let mut file_headers = [0u8; 16];
+            match file.read_exact(&mut file_headers) {
+                Ok(_) => (),
+                Err(_) => return Err(TreeFileError::MissingHeaders),
+            };
+
+            if file_headers[0..8] != FILE_IDENTIFIER {
+                return Err(TreeFileError::InvalidIdentifier);
+            };
+
+            if file_headers[8..10] != FORMAT_VERSION {
+                return Err(TreeFileError::UnsupportedFormatVersion);
+            };
+
+            let feature_bits = utils::bytes_to_bits(&file_headers[10..12]);
+            let mut i = 0;
+            for feature in Feature::iter() {
+                if feature_bits[i] {
+                    features.push(feature);
+                }
+                i += 1;
+            }
+
+            let subitem_count = utils::u8_array_to_u32(&match &file_headers[12..16] {
+                [a, b, c, d] => [*a, *b, *c, *d],
+                _ => panic!("Slice does not have a length of 4"),
+            });
+            for _ in 0..subitem_count {
+                let mut subitem_bytes = [0_u8; 4];
+                match file.read_exact(&mut subitem_bytes) {
+                    Ok(_) => (),
+                    Err(_) => return Err(TreeFileError::MissingHeaders),
+                };
+                subitems.push(utils::u8_array_to_u32(&subitem_bytes));
+            }
+        }
+
+        let mut file = match OpenOptions::new()
+            .read(true)
+            .write(mode == TreeOpenMode::ReadWrite)
+            .open(&file_path)
+        {
             Ok(file) => file,
             Err(_) => return Err(TreeFileError::FileNotOpened),
         };
 
-        let mut file_headers = [0u8; 16];
-        match file.read_exact(&mut file_headers) {
-            Ok(_) => (),
-            Err(_) => return Err(TreeFileError::MissingHeaders),
-        };
-
-        if file_headers[0..8] != FILE_IDENTIFIER {
-            return Err(TreeFileError::InvalidIdentifier);
-        };
-
-        if file_headers[8..10] != FORMAT_VERSION {
-            return Err(TreeFileError::UnsupportedFormatVersion);
-        };
-
-        let feature_bits = utils::bytes_to_bits(&file_headers[10..12]);
-        let mut i = 0;
-        for feature in Feature::iter() {
-            if feature_bits[i] {
-                features.push(feature);
-            }
-            i += 1;
-        }
-
-        let subitem_count = utils::u8_array_to_u32(&match &file_headers[12..16] {
-            [a, b, c, d] => [*a, *b, *c, *d],
-            _ => panic!("Slice does not have a length of 4"),
-        });
-        for _ in 0..subitem_count {
-            let mut subitem_bytes = [0_u8; 4];
-            match file.read_exact(&mut subitem_bytes) {
-                Ok(_) => (),
-                Err(_) => return Err(TreeFileError::MissingHeaders),
-            };
-            subitems.push(utils::u8_array_to_u32(&subitem_bytes));
-        }
+        let header_size = 16 + (subitems.len() * 4) as usize;
 
         Ok(Self {
             file,
+            mode,
+            header_size,
             features,
             subitems,
         })
@@ -85,46 +124,247 @@ impl Tree {
 
     pub fn create(
         file_path: &'static str,
+        mode: TreeOpenMode,
         features: Vec<Feature>,
         subitems: Vec<u32>,
     ) -> Result<Self, TreeFileError> {
-        let mut file = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .append(true)
-            .open(&file_path)
         {
-            Ok(file) => file,
-            Err(_) => return Err(TreeFileError::FileNotOpened),
-        };
+            let mut file = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .append(true)
+                .open(&file_path)
+            {
+                Ok(file) => file,
+                Err(_) => return Err(TreeFileError::FileNotOpened),
+            };
 
-        let mut file_buffer = [0_u8; 1];
-        match file.read_exact(&mut file_buffer) {
-            Ok(_) => {
-                return Err(TreeFileError::FileHasContents);
+            let mut file_buffer = [0_u8; 1];
+            match file.read_exact(&mut file_buffer) {
+                Ok(_) => {
+                    return Err(TreeFileError::FileHasContents);
+                }
+                Err(_) => (),
+            };
+
+            file.write(&FILE_IDENTIFIER).unwrap();
+            file.write(&FORMAT_VERSION).unwrap();
+
+            let mut feature_bits = vec![features.contains(&Feature::Disabling)];
+            feature_bits.extend(vec![false; 16 - feature_bits.len()]); // Align to 2 bytes
+            file.write(&utils::bits_to_bytes(&feature_bits)).unwrap();
+
+            file.write(&utils::u32_to_u8_array(subitems.len() as u32))
+                .unwrap();
+
+            for subitem in &subitems {
+                file.write(&utils::u32_to_u8_array(*subitem)).unwrap();
             }
-            Err(_) => (),
-        };
+        }
 
-        file.write(&FILE_IDENTIFIER).unwrap();
-        file.write(&FORMAT_VERSION).unwrap();
-
-        let mut feature_bits = vec![features.contains(&Feature::Disabling)];
-        feature_bits.extend(vec![false; 16 - feature_bits.len()]); // Align to 2 bytes
-        file.write(&utils::bits_to_bytes(&feature_bits)).unwrap();
-
-        file.write(&utils::u32_to_u8_array(subitems.len() as u32))
+        let file = OpenOptions::new()
+            .read(true)
+            .write(mode == TreeOpenMode::ReadWrite)
+            .open(&file_path)
             .unwrap();
 
-        for subitem in &subitems {
-            file.write(&utils::u32_to_u8_array(*subitem)).unwrap();
-        }
+        let header_size = 16 + (subitems.len() * 4) as usize;
 
         Ok(Self {
             file,
+            mode,
+            header_size,
             features,
             subitems,
         })
+    }
+
+    pub fn node_size(&self) -> u32 {
+        let mut size = 0;
+
+        for subitem in &self.subitems {
+            size += *subitem;
+        }
+
+        if self.features.contains(&Feature::Disabling) {
+            size += 1;
+        }
+
+        size
+    }
+
+    pub fn nodes(&self) -> u64 {
+        let tree_storage_size = match self.file.metadata() {
+            Ok(metadata) => metadata.len() - self.header_size as u64,
+            Err(_) => 0,
+        };
+
+        tree_storage_size * 8 / self.node_size() as u64
+    }
+
+    pub fn levels(&self) -> u32 {
+        let leafs = self.nodes();
+
+        if leafs != 0 {
+            leafs.ilog2()
+        } else {
+            0
+        }
+    }
+
+    pub fn get_node(&mut self, position: u128) -> Result<Node, NodeError> {
+        let node_size = self.node_size();
+
+        if position >= self.nodes() as u128 {
+            return Err(NodeError::Unexistent);
+        };
+
+        self.file
+            .seek(SeekFrom::Start(
+                (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
+            ))
+            .unwrap();
+
+        let mut byte_buffer = vec![0_u8; node_size.div_ceil(8) as usize];
+
+        match self.file.read_exact(&mut byte_buffer) {
+            Ok(_) => (),
+            Err(_) => return Err(NodeError::Unexistent),
+        };
+
+        let bits: Vec<bool> = utils::bytes_to_bits(&byte_buffer);
+
+        let padding_left: usize = ((position * node_size as u128) % 8) as usize;
+        let padding_right = 8 - (padding_left + node_size as usize) % 8;
+
+        let mut bits: Vec<bool> = bits[padding_left..padding_right].to_vec();
+
+        if self.features.contains(&Feature::Disabling) {
+            if bits[0] == false {
+                return Err(NodeError::Disabled);
+            };
+
+            bits.remove(0);
+        };
+
+        let mut subitems: Vec<Vec<bool>> = vec![];
+        for subitem in &self.subitems {
+            subitems.push(bits[0..*subitem as usize].to_vec());
+            bits.drain(0..*subitem as usize);
+        }
+
+        Ok(Node {
+            tree: self,
+            position,
+            subitems,
+        })
+    }
+
+    pub fn add_node(
+        &mut self,
+        subitems: Vec<Vec<bool>>,
+        position: u128,
+        overwrite: bool,
+    ) -> Result<Node, NodeError> {
+        let mut bits: Vec<bool> = vec![];
+
+        if self.features.contains(&Feature::Disabling) {
+            bits.push(true);
+        };
+
+        let mut i: usize = 0;
+        for subitem in &self.subitems {
+            if subitems[i].len() != *subitem as usize {
+                return Err(NodeError::InvalidSubitem);
+            };
+            i += 1;
+        }
+
+        bits.extend(subitems.concat());
+
+        if !overwrite {
+            match self.get_node(position) {
+                Ok(node) => return Err(NodeError::NodeAlreadyExists),
+                Err(_) => (),
+            };
+        };
+
+        let nodes = self.nodes();
+        let node_size = self.node_size();
+        if (nodes as u128) < position {
+            // Must add empty (0s?) nodes before the position
+            self.file.seek(SeekFrom::End(0_i64));
+            self.file.write(&vec![
+                0_u8;
+                ((nodes - position as u64) * (node_size as u64)).div_ceil(8)
+                    as usize
+            ]);
+        };
+
+        let padding_left: usize = ((position * node_size as u128) % 8) as usize;
+        let padding_right = 8 - (padding_left + node_size as usize) % 8;
+
+        let mut byte_buffer = vec![0_u8; node_size.div_ceil(8) as usize];
+
+        self.file
+            .seek(SeekFrom::Start(
+                (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
+            ))
+            .unwrap();
+        match self.file.read_exact(&mut byte_buffer) {
+            Ok(_) => (),
+            Err(_) => {
+                self.file
+                    .seek(SeekFrom::Start(
+                        (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
+                    ))
+                    .unwrap();
+
+                // Read only first byte to get the padding (and to avoid corrupting the previous node).
+                byte_buffer = vec![0_u8];
+                self.file.read_exact(&mut byte_buffer);
+            }
+        };
+
+        println!("{:?} {:?} {:?}", byte_buffer, padding_left, padding_right);
+
+        let fragment_bits: Vec<bool> = vec![
+            utils::bytes_to_bits(&byte_buffer)[0..padding_left].to_vec(),
+            bits,
+            utils::bytes_to_bits(&byte_buffer)[padding_right..].to_vec(),
+        ]
+        .concat();
+
+        println!("{:?}", fragment_bits);
+
+        self.file
+            .seek(SeekFrom::Start(
+                (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
+            ))
+            .unwrap();
+        self.file
+            .write(&utils::bits_to_bytes(&fragment_bits))
+            .unwrap();
+
+        self.get_node(position)
+    }
+}
+
+impl Node<'_> {
+    pub fn level(&self) -> u32 {
+        if self.position != 0 {
+            self.position.ilog2()
+        } else {
+            0
+        }
+    }
+
+    pub fn parent(&mut self) -> Result<Node, NodeError> {
+        self.tree.get_node((self.position - 1) / 2)
+    }
+
+    pub fn child(&mut self, index: u128) -> Result<Node, NodeError> {
+        self.tree.get_node(self.position * 2 + index as u128)
     }
 }
