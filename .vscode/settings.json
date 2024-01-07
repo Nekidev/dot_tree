@@ -1,6 +1,5 @@
 {
     "rust-analyzer.linkedProjects": [
-        ".\\Cargo.toml",
-        ".\\uwu\\tree-rs\\Cargo.toml"
+        ".\\src\\tree-rs\\Cargo.toml"
     ]
 }

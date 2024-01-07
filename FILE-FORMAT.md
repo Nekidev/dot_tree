@@ -148,6 +148,12 @@ Each item's sub-item is a piece of data stored in that specific item. They don't
 
 Sub-items are placed one after the other, in order of definition in the file headers.
 
+## Other Topics
+
+### Byte Alignment
+
+If the file is not byte-aligned (the length of the bits is not a multiple of 8), the file can be padded with 0s.
+
 ## File Structure Graph
 
 The following "graph" illustrates how a complete `.tree` file looks:
@@ -173,4 +179,5 @@ The following "graph" illustrates how a complete `.tree` file looks:
         for n in subitem_sizes
     )
 }
+[? bits: Padding]
 ```
