@@ -23,6 +23,7 @@ pub enum TreeFileError {
 pub enum NodeError {
     Disabled,
     Unexistent,
+    InvalidIndex,
     InvalidSubitem,
     NodeAlreadyExists,
 }
@@ -203,6 +204,10 @@ impl Tree {
         tree_storage_size * 8 / self.node_size() as u64
     }
 
+    pub fn root(&mut self) -> Result<Node, NodeError> {
+        self.get_node(0)
+    }
+
     pub fn levels(&self) -> u32 {
         let leafs = self.nodes();
 
@@ -214,31 +219,30 @@ impl Tree {
     }
 
     pub fn get_node(&mut self, position: u128) -> Result<Node, NodeError> {
-        let node_size = self.node_size();
+        let node_size = self.node_size() as u128;
+        let nodes = self.nodes() as u128;
+        
+        let start_byte = self.header_size as u128 + (position * node_size) / 8;
+        let pad_l = (position * node_size) % 8;
+        let pad_r = 8 - ((pad_l + node_size) % 8);
+        let buf_size = (pad_l + node_size).div_ceil(8);
 
-        if position >= self.nodes() as u128 {
+        if position >= nodes as u128 {
             return Err(NodeError::Unexistent);
         };
 
-        self.file
-            .seek(SeekFrom::Start(
-                (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
-            ))
-            .unwrap();
+        self.file.seek(SeekFrom::Start(start_byte as u64)).unwrap();
 
-        let mut byte_buffer = vec![0_u8; node_size.div_ceil(8) as usize];
+        let mut byte_buffer = vec![0_u8; buf_size as usize];
 
         match self.file.read_exact(&mut byte_buffer) {
             Ok(_) => (),
             Err(_) => return Err(NodeError::Unexistent),
         };
 
-        let bits: Vec<bool> = utils::bytes_to_bits(&byte_buffer);
+        let bit_buffer: Vec<bool> = utils::bytes_to_bits(&byte_buffer);
 
-        let padding_left: usize = ((position * node_size as u128) % 8) as usize;
-        let padding_right = 8 - (padding_left + node_size as usize) % 8;
-
-        let mut bits: Vec<bool> = bits[padding_left..padding_right].to_vec();
+        let mut bits: Vec<bool> = bit_buffer[(pad_l as usize)..(bit_buffer.len() - pad_r as usize)].to_vec();
 
         if self.features.contains(&Feature::Disabling) {
             if bits[0] == false {
@@ -302,8 +306,8 @@ impl Tree {
             ]);
         };
 
-        let padding_left: usize = ((position * node_size as u128) % 8) as usize;
-        let padding_right = 8 - (padding_left + node_size as usize) % 8;
+        let pad_l: usize = ((position * node_size as u128) % 8) as usize;
+        let pad_r = 8 - (pad_l + node_size as usize) % 8;
 
         let mut byte_buffer = vec![0_u8; node_size.div_ceil(8) as usize];
 
@@ -327,25 +331,21 @@ impl Tree {
             }
         };
 
-        println!("{:?} {:?} {:?}", byte_buffer, padding_left, padding_right);
+        let align_left_bits = utils::bytes_to_bits(&byte_buffer)[0..pad_l].to_vec();
+        let align_right_bits = utils::bytes_to_bits(&byte_buffer)[pad_r..].to_vec();
 
-        let fragment_bits: Vec<bool> = vec![
-            utils::bytes_to_bits(&byte_buffer)[0..padding_left].to_vec(),
-            bits,
-            utils::bytes_to_bits(&byte_buffer)[padding_right..].to_vec(),
-        ]
-        .concat();
+        let fragment_bits: Vec<bool> = vec![align_left_bits, bits, align_right_bits].concat();
 
-        println!("{:?}", fragment_bits);
-
-        self.file
-            .seek(SeekFrom::Start(
-                (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
-            ))
-            .unwrap();
-        self.file
-            .write(&utils::bits_to_bytes(&fragment_bits))
-            .unwrap();
+        match self.file.seek(SeekFrom::Start(
+            (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
+        )) {
+            Ok(_) => (),
+            Err(_) => return Err(NodeError::Unexistent),
+        };
+        match self.file.write(&utils::bits_to_bytes(&fragment_bits)) {
+            Ok(_) => (),
+            Err(_) => return Err(NodeError::Unexistent),
+        };
 
         self.get_node(position)
     }
@@ -364,7 +364,31 @@ impl Node<'_> {
         self.tree.get_node((self.position - 1) / 2)
     }
 
-    pub fn child(&mut self, index: u128) -> Result<Node, NodeError> {
-        self.tree.get_node(self.position * 2 + index as u128)
+    pub fn child(&mut self, index: u8) -> Result<Node, NodeError> {
+        if index > 1 {
+            return Err(NodeError::InvalidIndex);
+        }
+
+        if self.position == 0 {
+            self.tree.get_node(1 + index as u128)
+        } else {
+            self.tree.get_node(self.position * 2 + index as u128)
+        }
+    }
+
+    pub fn is_leaf(&mut self) -> bool {
+        self.child(0).is_err() && self.child(1).is_err()
+    }
+
+    pub fn add_child(&mut self, index: u8, subitems: Vec<Vec<bool>>, overwrite: bool) -> Result<Node, NodeError> {
+        if index > 1 {
+            return Err(NodeError::InvalidIndex);
+        }
+
+        if self.position == 0 {
+            self.tree.add_node(subitems, 1 + index as u128, overwrite)
+        } else {
+            self.tree.add_node(subitems, self.position * 2 + index as u128, overwrite)
+        }
     }
 }

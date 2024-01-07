@@ -20,5 +20,13 @@ fn main() {
     println!("{:?}", tree);
     dbg!(tree.nodes());
     dbg!(tree.add_node(vec![vec![true, false, false, true]], 0, true));
-    dbg!(tree.get_node(0));
+    
+    let mut node = tree.get_node(0).unwrap();
+    dbg!(&node);
+    dbg!(&node.child(0));
+    dbg!(&node.child(1));
+    dbg!(&node.add_child(0, vec![vec![true, false, false, true]], true));
+    dbg!(&node.child(0));
+    dbg!(&node.child(1));
+    println!("{:?}", tree);
 }
