@@ -1,3 +1,5 @@
+#![crate_name = "dot_tree"]
+
 mod utils;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -10,52 +12,92 @@ const FORMAT_VERSION: [u8; 2] = [0_u8, 0_u8];
 
 #[derive(Debug)]
 pub enum TreeFileError {
+    /// The tree file couldn't be opened.
     FileNotOpened,
+
+    /// The tree file couldn't be created because it already has data in it.
     FileHasContents,
+
+    /// The tree file is missing headers.
     MissingHeaders,
+
+    /// The tree file doesn't have the correct identifier.
     InvalidIdentifier,
+
+    /// The tree file is in an unsupported format version. Try upgrading the crate's version.
     UnsupportedFormatVersion,
+
+    /// The tree file requires file permissions to write.
     MissingPermissions,
 }
 
 #[derive(Debug)]
 pub enum NodeError {
+    /// The node exists but it was disabled.
     Disabled,
+
+    /// The node is in an unexistent position.
     Unexistent,
+
+    /// The child index is out of bounds.
     InvalidIndex,
+
+    /// The subitem has an incorrect size
     InvalidSubitem,
+
+    /// Attempted to create a node that already exists (with override = false).
     NodeAlreadyExists,
+
+    /// The file is missing a feature to perform the operation.
     MissingFeature,
 }
 
+/// Format features.
 #[derive(PartialEq, Debug, EnumIter)]
 pub enum Feature {
     Disabling,
 }
 
+/// Permissions to request when opening the tree file. Opening in write mode
+/// will lock the file while the tree is allocated.
 #[derive(Debug, PartialEq)]
 pub enum TreeOpenMode {
     Read,
     ReadWrite,
 }
 
+/// A tree file.
 #[derive(Debug)]
 pub struct Tree {
+    /// The tree file.
     pub file: File,
+
+    /// The mode in which the tree file was opened.
     pub mode: TreeOpenMode,
+
+    /// The total size (in bytes) of the headers.
     pub header_size: usize,
+
+    /// The features supported by the tree file.
     pub features: Vec<Feature>,
+
+    /// The size of each node subitem in bits.
     pub subitems: Vec<u32>,
 }
 
 #[derive(Debug)]
 pub struct Node<'a> {
     tree: &'a mut Tree,
+
+    /// The tranversal position.
     pub position: u128,
+
+    /// The node's subitems in bits.
     pub subitems: Vec<Vec<bool>>,
 }
 
 impl Tree {
+    /// Open an existent tree file.
     pub fn open(file_path: &'static str, mode: TreeOpenMode) -> Result<Self, TreeFileError> {
         let mut features: Vec<Feature> = vec![];
         let mut subitems: Vec<u32> = vec![];
@@ -123,6 +165,7 @@ impl Tree {
         })
     }
 
+    /// Create a new tree file.
     pub fn create(
         file_path: &'static str,
         mode: TreeOpenMode,
@@ -181,6 +224,12 @@ impl Tree {
         })
     }
 
+    /// Flush the changes to disk.
+    pub fn flush(&mut self) {
+        self.file.sync_all().unwrap();
+    }
+
+    /// The total node size in bits (including headers).
     pub fn node_size(&self) -> u32 {
         let mut size = 0;
 
@@ -195,6 +244,8 @@ impl Tree {
         size
     }
 
+    /// The amount of nodes in the tree. Might return a slightly incorrect
+    /// value if the total size of a tree in bits is less than 4 bits.
     pub fn nodes(&self) -> u64 {
         let tree_storage_size = match self.file.metadata() {
             Ok(metadata) => metadata.len() - self.header_size as u64,
@@ -204,10 +255,12 @@ impl Tree {
         tree_storage_size * 8 / self.node_size() as u64
     }
 
+    /// The tree's root node.
     pub fn root(&mut self) -> Result<Node, NodeError> {
         self.node(0)
     }
 
+    /// The amount of levels in the tree.
     pub fn levels(&self) -> u32 {
         let nodes = self.nodes();
 
@@ -218,6 +271,7 @@ impl Tree {
         }
     }
 
+    /// Get a node by its tranversal position.
     pub fn node(&mut self, position: u128) -> Result<Node, NodeError> {
         let node_size = self.node_size() as f64;
         let nodes = self.nodes() as u128;
@@ -265,6 +319,10 @@ impl Tree {
         })
     }
 
+    /// Set a node by its tranversal position. If `overwrite` is false, the
+    /// function will return an error if the node already exists. If the node
+    /// is unexistent, it will be created. This will also add all the
+    /// (disabled) nodes needed to set a node in this position.
     pub fn set_node(
         &mut self,
         subitems: &Vec<Vec<bool>>,
@@ -348,6 +406,7 @@ impl Tree {
 }
 
 impl Node<'_> {
+    /// Get the level (depth) of the node.
     pub fn level(&self) -> u32 {
         if self.position != 0 {
             self.position.ilog2()
@@ -356,6 +415,7 @@ impl Node<'_> {
         }
     }
 
+    /// Get the parent of the node.
     pub fn parent(&mut self) -> Result<Node, NodeError> {
         if self.position == 0 {
             return Err(NodeError::Unexistent);
@@ -364,6 +424,8 @@ impl Node<'_> {
         self.tree.node((self.position - 1) / 2)
     }
 
+    /// Get a child of the node. Index 0 is the left child, index 1 is the
+    /// right child.
     pub fn child(&mut self, index: u8) -> Result<Node, NodeError> {
         if index > 1 {
             return Err(NodeError::InvalidIndex);
@@ -376,10 +438,12 @@ impl Node<'_> {
         }
     }
 
+    /// Check if the node is a leaf (hasn't got any children).
     pub fn is_leaf(&mut self) -> bool {
         self.child(0).is_err() && self.child(1).is_err()
     }
 
+    /// Add a child to the node.
     pub fn add_child(
         &mut self,
         index: u8,
@@ -403,6 +467,7 @@ impl Node<'_> {
         }
     }
 
+    /// Disables the node.
     pub fn disable(&mut self) -> Result<(), NodeError> {
         if !self.tree.features.contains(&Feature::Disabling) {
             return Err(NodeError::MissingFeature);
@@ -415,6 +480,7 @@ impl Node<'_> {
         Ok(())
     }
 
+    /// Enables the node.
     pub fn enable(&mut self) -> Result<(), NodeError> {
         if !self.tree.features.contains(&Feature::Disabling) {
             return Err(NodeError::MissingFeature);
@@ -427,6 +493,7 @@ impl Node<'_> {
         Ok(())
     }
 
+    /// Update the node's subitems.
     pub fn update(&mut self, subitems: Vec<Vec<bool>>) -> Result<(), NodeError> {
         let _ = self.tree.set_node(&subitems, &self.position, false, false);
         self.subitems = subitems;
@@ -434,6 +501,7 @@ impl Node<'_> {
         Ok(())
     }
 
+    /// Refresh the node's data from the tree file.
     pub fn refresh(&mut self) -> Result<Node, NodeError> {
         let node = match self.tree.node(self.position) {
             Ok(node) => node,
