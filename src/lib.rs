@@ -85,6 +85,7 @@ pub struct Tree {
     pub subitems: Vec<u32>,
 }
 
+/// A node in the tree.
 #[derive(Debug)]
 pub struct Node<'a> {
     tree: &'a mut Tree,
