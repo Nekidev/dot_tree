@@ -3,6 +3,14 @@
 version = 3
 
 [[package]]
+name = "dot_tree"
+version = "1.0.0"
+dependencies = [
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -60,14 +68,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "tree"
-version = "1.0.0"
-dependencies = [
- "strum",
- "strum_macros",
 ]
 
 [[package]]
