@@ -1,2 +1,0 @@
-class InvalidFileIdentifier(Exception):
-    pass

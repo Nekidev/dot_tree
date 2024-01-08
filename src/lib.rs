@@ -1,9 +1,8 @@
+mod utils;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-
-mod utils;
 
 // NEKOTREE
 const FILE_IDENTIFIER: [u8; 8] = [0x4e, 0x45, 0x4b, 0x4f, 0x54, 0x52, 0x45, 0x45];
@@ -26,6 +25,7 @@ pub enum NodeError {
     InvalidIndex,
     InvalidSubitem,
     NodeAlreadyExists,
+    MissingFeature,
 }
 
 #[derive(PartialEq, Debug, EnumIter)]
@@ -103,7 +103,7 @@ impl Tree {
             }
         }
 
-        let mut file = match OpenOptions::new()
+        let file = match OpenOptions::new()
             .read(true)
             .write(mode == TreeOpenMode::ReadWrite)
             .open(&file_path)
@@ -205,27 +205,26 @@ impl Tree {
     }
 
     pub fn root(&mut self) -> Result<Node, NodeError> {
-        self.get_node(0)
+        self.node(0)
     }
 
     pub fn levels(&self) -> u32 {
-        let leafs = self.nodes();
+        let nodes = self.nodes();
 
-        if leafs != 0 {
-            leafs.ilog2()
+        if nodes != 0 {
+            nodes.ilog2()
         } else {
             0
         }
     }
 
-    pub fn get_node(&mut self, position: u128) -> Result<Node, NodeError> {
-        let node_size = self.node_size() as u128;
+    pub fn node(&mut self, position: u128) -> Result<Node, NodeError> {
+        let node_size = self.node_size() as f64;
         let nodes = self.nodes() as u128;
-        
-        let start_byte = self.header_size as u128 + (position * node_size) / 8;
-        let pad_l = (position * node_size) % 8;
-        let pad_r = 8 - ((pad_l + node_size) % 8);
-        let buf_size = (pad_l + node_size).div_ceil(8);
+
+        let start_byte = ((self.header_size as f64) + (position as f64) * node_size / 8.0) as u64;
+        let pad_l = (node_size * position as f64) % 8.0;
+        let buf_size = ((pad_l + node_size) as u64).div_ceil(8);
 
         if position >= nodes as u128 {
             return Err(NodeError::Unexistent);
@@ -242,7 +241,8 @@ impl Tree {
 
         let bit_buffer: Vec<bool> = utils::bytes_to_bits(&byte_buffer);
 
-        let mut bits: Vec<bool> = bit_buffer[(pad_l as usize)..(bit_buffer.len() - pad_r as usize)].to_vec();
+        let mut bits: Vec<bool> =
+            bit_buffer[(pad_l as usize)..((pad_l + node_size) as usize)].to_vec();
 
         if self.features.contains(&Feature::Disabling) {
             if bits[0] == false {
@@ -265,16 +265,17 @@ impl Tree {
         })
     }
 
-    pub fn add_node(
+    pub fn set_node(
         &mut self,
-        subitems: Vec<Vec<bool>>,
-        position: u128,
+        subitems: &Vec<Vec<bool>>,
+        position: &u128,
         overwrite: bool,
+        disabled: bool,
     ) -> Result<Node, NodeError> {
         let mut bits: Vec<bool> = vec![];
 
         if self.features.contains(&Feature::Disabling) {
-            bits.push(true);
+            bits.push(!disabled);
         };
 
         let mut i: usize = 0;
@@ -288,34 +289,30 @@ impl Tree {
         bits.extend(subitems.concat());
 
         if !overwrite {
-            match self.get_node(position) {
-                Ok(node) => return Err(NodeError::NodeAlreadyExists),
+            match self.node(*position) {
+                Ok(_) => return Err(NodeError::NodeAlreadyExists),
                 Err(_) => (),
             };
         };
 
-        let nodes = self.nodes();
-        let node_size = self.node_size();
-        if (nodes as u128) < position {
+        let node_size = self.node_size() as u128;
+        let nodes = self.nodes() as u128;
+        if nodes < *position {
             // Must add empty (0s?) nodes before the position
-            self.file.seek(SeekFrom::End(0_i64));
-            self.file.write(&vec![
+            let _ = self.file.seek(SeekFrom::End(0_i64));
+            let _ = self.file.write(&vec![
                 0_u8;
-                ((nodes - position as u64) * (node_size as u64)).div_ceil(8)
-                    as usize
+                ((nodes - position) * node_size).div_ceil(8) as usize
             ]);
         };
 
-        let pad_l: usize = ((position * node_size as u128) % 8) as usize;
-        let pad_r = 8 - (pad_l + node_size as usize) % 8;
+        let start_byte = self.header_size as u128 + (position * node_size) / 8;
+        let pad_l = (position * node_size) % 8;
+        let buf_size = (pad_l + node_size).div_ceil(8);
 
-        let mut byte_buffer = vec![0_u8; node_size.div_ceil(8) as usize];
+        let mut byte_buffer = vec![0_u8; buf_size as usize];
 
-        self.file
-            .seek(SeekFrom::Start(
-                (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
-            ))
-            .unwrap();
+        self.file.seek(SeekFrom::Start(start_byte as u64)).unwrap();
         match self.file.read_exact(&mut byte_buffer) {
             Ok(_) => (),
             Err(_) => {
@@ -327,18 +324,17 @@ impl Tree {
 
                 // Read only first byte to get the padding (and to avoid corrupting the previous node).
                 byte_buffer = vec![0_u8];
-                self.file.read_exact(&mut byte_buffer);
+                let _ = self.file.read_exact(&mut byte_buffer);
             }
         };
 
-        let align_left_bits = utils::bytes_to_bits(&byte_buffer)[0..pad_l].to_vec();
-        let align_right_bits = utils::bytes_to_bits(&byte_buffer)[pad_r..].to_vec();
+        let pad_l_bits = utils::bytes_to_bits(&byte_buffer)[..(pad_l as usize)].to_vec();
+        let pad_r_bits =
+            utils::bytes_to_bits(&byte_buffer)[((pad_l + node_size) % 8) as usize..].to_vec();
 
-        let fragment_bits: Vec<bool> = vec![align_left_bits, bits, align_right_bits].concat();
+        let fragment_bits: Vec<bool> = vec![pad_l_bits, bits, pad_r_bits].concat();
 
-        match self.file.seek(SeekFrom::Start(
-            (self.header_size as u128 + ((position * node_size as u128) / 8)) as u64,
-        )) {
+        match self.file.seek(SeekFrom::Start(start_byte as u64)) {
             Ok(_) => (),
             Err(_) => return Err(NodeError::Unexistent),
         };
@@ -347,7 +343,7 @@ impl Tree {
             Err(_) => return Err(NodeError::Unexistent),
         };
 
-        self.get_node(position)
+        self.node(*position)
     }
 }
 
@@ -361,7 +357,11 @@ impl Node<'_> {
     }
 
     pub fn parent(&mut self) -> Result<Node, NodeError> {
-        self.tree.get_node((self.position - 1) / 2)
+        if self.position == 0 {
+            return Err(NodeError::Unexistent);
+        };
+
+        self.tree.node((self.position - 1) / 2)
     }
 
     pub fn child(&mut self, index: u8) -> Result<Node, NodeError> {
@@ -370,9 +370,9 @@ impl Node<'_> {
         }
 
         if self.position == 0 {
-            self.tree.get_node(1 + index as u128)
+            self.tree.node(1 + index as u128)
         } else {
-            self.tree.get_node(self.position * 2 + index as u128)
+            self.tree.node(self.position * 2 + index as u128)
         }
     }
 
@@ -380,15 +380,69 @@ impl Node<'_> {
         self.child(0).is_err() && self.child(1).is_err()
     }
 
-    pub fn add_child(&mut self, index: u8, subitems: Vec<Vec<bool>>, overwrite: bool) -> Result<Node, NodeError> {
+    pub fn add_child(
+        &mut self,
+        index: u8,
+        subitems: Vec<Vec<bool>>,
+        overwrite: bool,
+    ) -> Result<Node, NodeError> {
         if index > 1 {
             return Err(NodeError::InvalidIndex);
         }
 
         if self.position == 0 {
-            self.tree.add_node(subitems, 1 + index as u128, overwrite)
+            self.tree
+                .set_node(&subitems, &(1 + index as u128), overwrite, true)
         } else {
-            self.tree.add_node(subitems, self.position * 2 + index as u128, overwrite)
+            self.tree.set_node(
+                &subitems,
+                &(self.position * 2 + index as u128),
+                overwrite,
+                true,
+            )
         }
+    }
+
+    pub fn disable(&mut self) -> Result<(), NodeError> {
+        if !self.tree.features.contains(&Feature::Disabling) {
+            return Err(NodeError::MissingFeature);
+        };
+
+        let _ = self
+            .tree
+            .set_node(&self.subitems, &self.position, true, true);
+
+        Ok(())
+    }
+
+    pub fn enable(&mut self) -> Result<(), NodeError> {
+        if !self.tree.features.contains(&Feature::Disabling) {
+            return Err(NodeError::MissingFeature);
+        };
+
+        let _ = self
+            .tree
+            .set_node(&self.subitems, &self.position, true, false);
+
+        Ok(())
+    }
+
+    pub fn update(&mut self, subitems: Vec<Vec<bool>>) -> Result<(), NodeError> {
+        let _ = self.tree.set_node(&subitems, &self.position, false, false);
+        self.subitems = subitems;
+
+        Ok(())
+    }
+
+    pub fn refresh(&mut self) -> Result<Node, NodeError> {
+        let node = match self.tree.node(self.position) {
+            Ok(node) => node,
+            Err(_) => return Err(NodeError::Unexistent),
+        };
+
+        self.position = node.position.clone();
+        self.subitems = node.subitems.clone();
+
+        Ok(node)
     }
 }
